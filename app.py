@@ -20,7 +20,7 @@ import customtkinter as ctk
 # ─────────────────────────────────────────────
 # 專案資訊 (由 release_helper.py 讀取)
 # ─────────────────────────────────────────────
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 GITHUB_REPO = "mathced-com/CYT_PDF" # 請根據實際 GitHub 帳號修改
 
 
@@ -360,7 +360,7 @@ class ConvertPage(BasePage):
         self.grid_columnconfigure(0, weight=1)
 
         # 1. 標題
-        ctk.CTkLabel(self, text="PDF 轉圖片", font=ctk.CTkFont(size=24, weight="bold")).grid(row=0, column=0, pady=(20, 10), sticky="w", padx=30)
+        ctk.CTkLabel(self, text="PDF 轉圖", font=ctk.CTkFont(size=24, weight="bold")).grid(row=0, column=0, pady=(20, 10), sticky="w", padx=30)
 
         # 2. 來源檔案
         self.file_frame = ctk.CTkFrame(self)
@@ -1269,9 +1269,21 @@ class Sidebar(ctk.CTkFrame):
 
     def _build(self):
         # 應用程式 Logo / 標題
+        import os
+        from PIL import Image
+        logo_path = os.path.join(os.path.dirname(__file__), "icon.ico")
+        logo_img = None
+        if os.path.exists(logo_path):
+            try:
+                img = Image.open(logo_path)
+                logo_img = ctk.CTkImage(light_image=img, dark_image=img, size=(48, 48))
+            except: pass
+
         logo = ctk.CTkLabel(
             self,
-            text="CYT\nPDF 工具",
+            text="CYT_PDF 工具",
+            image=logo_img if logo_img else "",
+            compound="top",
             font=ctk.CTkFont(size=18, weight="bold"),
         )
         logo.pack(pady=(24, 16))
