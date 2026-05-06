@@ -20,7 +20,7 @@ import customtkinter as ctk
 # ─────────────────────────────────────────────
 # 專案資訊 (由 release_helper.py 讀取)
 # ─────────────────────────────────────────────
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 GITHUB_REPO = "mathced-com/CYT_PDF" # 請根據實際 GitHub 帳號修改
 
 
@@ -1311,7 +1311,7 @@ class Sidebar(ctk.CTkFrame):
         self._nav_buttons["settings"] = settings_btn
 
         # 一鍵更新按鈕 (放在設定上方)
-        update_btn = ctk.CTkButton(
+        self.update_btn = ctk.CTkButton(
             self,
             text="🚀  一鍵更新程式",
             anchor="w",
@@ -1322,7 +1322,7 @@ class Sidebar(ctk.CTkFrame):
             corner_radius=8,
             command=lambda: self.master.check_updates(), # 呼叫主類別的邏輯
         )
-        update_btn.pack(side="bottom", fill="x", padx=10, pady=2)
+        self.update_btn.pack(side="bottom", fill="x", padx=10, pady=2)
 
     # ── 公開 API ─────────────────────────────────────────────
 
@@ -1421,6 +1421,24 @@ class PDFApp(ctk.CTk):
         # 更新側邊欄高亮
         self.sidebar.set_active(key)
 
+    # ── 執行緒工具 ─────────────────────────────────────────────
+
+    def run_in_thread(self, target: Callable, args: tuple = (), on_success: Callable = None, on_error: Callable = None):
+        """在背景執行緒中執行耗時任務，避免介面凍結。"""
+        import threading
+        def _wrapper():
+            try:
+                result = target(*args)
+                if on_success:
+                    self.after(0, lambda: on_success(result))
+            except Exception as e:
+                if on_error:
+                    self.after(0, lambda: on_error(e))
+                else:
+                    print(f"[PDFApp] Thread error: {e}")
+
+        threading.Thread(target=_wrapper, daemon=True).start()
+
     # ── 工具方法 ─────────────────────────────────────────────
 
     def show_status(self, message: str, duration_ms: int = 3000):
@@ -1434,6 +1452,7 @@ class PDFApp(ctk.CTk):
     
     def check_updates(self):
         """供側邊欄按鈕呼叫的更新檢查介面"""
+        self.sidebar.update_btn.configure(text="⏳ 檢查中...", state="disabled")
         self.run_in_thread(self._fetch_latest_version, on_success=self._on_update_result)
 
     def _fetch_latest_version(self):
@@ -1453,6 +1472,9 @@ class PDFApp(ctk.CTk):
             return {"error": str(e)}
 
     def _on_update_result(self, result):
+        # 恢復按鈕狀態
+        self.sidebar.update_btn.configure(text="🚀  一鍵更新程式", state="normal")
+        
         import tkinter.messagebox as messagebox
         import webbrowser
         
