@@ -20,7 +20,7 @@ import customtkinter as ctk
 # ─────────────────────────────────────────────
 # 專案資訊 (由 release_helper.py 讀取)
 # ─────────────────────────────────────────────
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 GITHUB_REPO = "mathced-com/CYT_PDF" # 請根據實際 GitHub 帳號修改
 
 
@@ -1374,9 +1374,23 @@ class PDFApp(ctk.CTk):
 
         self._build_layout()
         self._register_pages()
+        self._cleanup_old_versions()
 
         # 預設顯示第一個頁面
         self.navigate("merge")
+
+    def _cleanup_old_versions(self):
+        """刪除上次更新留下的 _old.exe 檔案"""
+        import os
+        import sys
+        try:
+            current_dir = os.path.dirname(os.path.abspath(sys.executable))
+            for filename in os.listdir(current_dir):
+                if filename.endswith("_old.exe"):
+                    try:
+                        os.remove(os.path.join(current_dir, filename))
+                    except: pass # 檔案可能還被鎖定中，跳過
+        except: pass
 
     # ── 版面建立 ─────────────────────────────────────────────
 
@@ -1476,38 +1490,89 @@ class PDFApp(ctk.CTk):
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode())
+                # 尋找 Assets 中的 .exe 檔案
+                exe_url = ""
+                for asset in data.get("assets", []):
+                    if asset.get("name", "").endswith(".exe"):
+                        exe_url = asset.get("browser_download_url", "")
+                        break
+                
                 return {
                     "tag": data.get("tag_name", "v0.0.0").replace("v", ""),
                     "url": data.get("html_url", ""),
+                    "exe_url": exe_url
                 }
         except Exception as e:
             return {"error": str(e)}
 
     def _on_update_result(self, result):
-        # 恢復按鈕狀態
         self.sidebar.update_btn.configure(text="🚀  一鍵更新程式", state="normal")
         
         import tkinter.messagebox as messagebox
-        import webbrowser
-        
         if "error" in result:
             messagebox.showerror("更新檢查失敗", f"無法連接至 GitHub：\n{result['error']}")
             return
 
         latest_v = result["tag"]
-        download_url = result["url"]
+        exe_url = result["exe_url"]
 
         try:
             curr_parts = [int(p) for p in APP_VERSION.split('.')]
             late_parts = [int(p) for p in latest_v.split('.')]
             
             if late_parts > curr_parts:
-                if messagebox.askyesno("發現新版本", f"發現新版本 v{latest_v}！\n目前版本: v{APP_VERSION}\n\n是否立即前往下載頁面？"):
-                    webbrowser.open(download_url)
+                if messagebox.askyesno("發現新版本", f"發現新版本 v{latest_v}！\n目前版本: v{APP_VERSION}\n\n是否要「自動下載並更新」？\n(更新後程式將自動關閉)"):
+                    if not exe_url:
+                        messagebox.showwarning("警告", "在 GitHub 上找不到 EXE 安裝檔，請手動前往網頁下載。")
+                        import webbrowser
+                        webbrowser.open(result["url"])
+                        return
+                    
+                    self.sidebar.update_btn.configure(text="📥 下載中...", state="disabled")
+                    self.run_in_thread(self._perform_auto_update, args=(exe_url,), on_success=self._on_update_finished)
             else:
                 messagebox.showinfo("版本資訊", f"目前版本 (v{APP_VERSION}) 已是最新！")
         except:
             messagebox.showinfo("檢查完成", f"GitHub 最新版本為: v{latest_v}\n目前版本為: v{APP_VERSION}")
+
+    def _perform_auto_update(self, download_url):
+        """背景執行下載與更名工作"""
+        import os
+        import sys
+        import urllib.request
+        
+        try:
+            current_exe = os.path.abspath(sys.executable)
+            current_dir = os.path.dirname(current_exe)
+            temp_exe = os.path.join(current_dir, "update_new.tmp")
+
+            # 1. 下載新版本到暫存檔
+            urllib.request.urlretrieve(download_url, temp_exe)
+
+            # 2. 準備更名
+            old_exe = current_exe.replace(".exe", "_old.exe")
+            if os.path.exists(old_exe):
+                try: os.remove(old_exe)
+                except: pass
+            
+            # 3. 關鍵置換：Windows 允許重新命名正在執行的檔案！
+            os.rename(current_exe, old_exe)
+            os.rename(temp_exe, current_exe)
+            
+            return True
+        except Exception as e:
+            return str(e)
+
+    def _on_update_finished(self, result):
+        import tkinter.messagebox as messagebox
+        import sys
+        self.sidebar.update_btn.configure(text="🚀  一鍵更新程式", state="normal")
+        
+        if result is True:
+            messagebox.showinfo("更新完成", "新版本已下載並替換完成！\n\n按「確定」將關閉程式，\n請在關閉後重新手動啟動即可。")
+            sys.exit(0)
+        else:
+            messagebox.showerror("更新失敗", f"自動更新過程中發生錯誤：\n{result}")
 
 
 # ═══════════════════════════════════════════════════════════════
