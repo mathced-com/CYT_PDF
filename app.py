@@ -20,7 +20,7 @@ import customtkinter as ctk
 # ─────────────────────────────────────────────
 # 專案資訊 (由 release_helper.py 讀取)
 # ─────────────────────────────────────────────
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.2.0"
 GITHUB_REPO = "mathced-com/CYT_PDF" # 請根據實際 GitHub 帳號修改
 
 
@@ -1225,66 +1225,13 @@ class SettingsPage(BasePage):
         
         version_text = f"目前程式版本：v{APP_VERSION}"
         self.v_label = ctk.CTkLabel(self.info_frame, text=version_text, font=ctk.CTkFont(weight="bold"))
-        self.v_label.pack(pady=(20, 5))
-
-        self.update_btn = ctk.CTkButton(self.info_frame, text="🔍 檢查更新", width=160, command=self._check_for_updates)
-        self.update_btn.pack(pady=(10, 20))
+        self.v_label.pack(pady=20)
 
         # 4. 版權資訊
         ctk.CTkLabel(self, text="© 2026 CYT Toolset. All rights reserved.", text_color="gray").grid(row=3, column=0, pady=50)
 
     def _change_appearance_mode(self, mode: str):
         ctk.set_appearance_mode(mode.lower())
-
-    def _check_for_updates(self):
-        self.update_btn.configure(text="正在檢查...", state="disabled")
-        self.run_in_thread(self._fetch_latest_version, on_success=self._on_update_result)
-
-    def _fetch_latest_version(self):
-        import json
-        import urllib.request
-        from urllib.error import URLError
-        
-        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-        headers = {"User-Agent": "CYT-PDF-Tool"}
-        
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=5) as response:
-                data = json.loads(response.read().decode())
-                return {
-                    "tag": data.get("tag_name", "v0.0.0").replace("v", ""),
-                    "url": data.get("html_url", ""),
-                    "notes": data.get("body", "")
-                }
-        except Exception as e:
-            return {"error": str(e)}
-
-    def _on_update_result(self, result):
-        self.update_btn.configure(text="🔍 檢查更新", state="normal")
-        
-        import tkinter.messagebox as messagebox
-        import webbrowser
-
-        if "error" in result:
-            messagebox.showerror("更新檢查失敗", f"無法連接至 GitHub：\n{result['error']}")
-            return
-
-        latest_v = result["tag"]
-        download_url = result["url"]
-
-        # 簡單版本比對 (假設是 1.1.7 這種格式)
-        try:
-            curr_parts = [int(p) for p in APP_VERSION.split('.')]
-            late_parts = [int(p) for p in latest_v.split('.')]
-            
-            if late_parts > curr_parts:
-                if messagebox.askyesno("發現新版本", f"有新版本可用！\n\n目前版本: v{APP_VERSION}\n最新版本: v{latest_v}\n\n是否開啟下載頁面？"):
-                    webbrowser.open(download_url)
-            else:
-                messagebox.showinfo("版本資訊", f"您目前的版本 (v{APP_VERSION}) 已是最新！")
-        except:
-            messagebox.showinfo("檢查完成", f"GitHub 最新版本為: v{latest_v}\n目前版本為: v{APP_VERSION}")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1360,8 +1307,22 @@ class Sidebar(ctk.CTkFrame):
             corner_radius=8,
             command=lambda: self._on_nav("settings"),
         )
-        settings_btn.pack(side="bottom", fill="x", padx=10, pady=(4, 16))
+        settings_btn.pack(side="bottom", fill="x", padx=10, pady=(2, 16))
         self._nav_buttons["settings"] = settings_btn
+
+        # 一鍵更新按鈕 (放在設定上方)
+        update_btn = ctk.CTkButton(
+            self,
+            text="🚀  一鍵更新程式",
+            anchor="w",
+            height=42,
+            fg_color="#2ecc71", # 顯眼的綠色
+            text_color="white",
+            hover_color="#27ae60",
+            corner_radius=8,
+            command=lambda: self.master.check_updates(), # 呼叫主類別的邏輯
+        )
+        update_btn.pack(side="bottom", fill="x", padx=10, pady=2)
 
     # ── 公開 API ─────────────────────────────────────────────
 
@@ -1468,6 +1429,51 @@ class PDFApp(ctk.CTk):
         """
         print(f"[Status] {message}")
         # TODO: self.statusbar.set(message)
+
+    # ── 更新檢查邏輯 ─────────────────────────────────────────────
+    
+    def check_updates(self):
+        """供側邊欄按鈕呼叫的更新檢查介面"""
+        self.run_in_thread(self._fetch_latest_version, on_success=self._on_update_result)
+
+    def _fetch_latest_version(self):
+        import json
+        import urllib.request
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        headers = {"User-Agent": "CYT-PDF-Tool"}
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=5) as response:
+                data = json.loads(response.read().decode())
+                return {
+                    "tag": data.get("tag_name", "v0.0.0").replace("v", ""),
+                    "url": data.get("html_url", ""),
+                }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _on_update_result(self, result):
+        import tkinter.messagebox as messagebox
+        import webbrowser
+        
+        if "error" in result:
+            messagebox.showerror("更新檢查失敗", f"無法連接至 GitHub：\n{result['error']}")
+            return
+
+        latest_v = result["tag"]
+        download_url = result["url"]
+
+        try:
+            curr_parts = [int(p) for p in APP_VERSION.split('.')]
+            late_parts = [int(p) for p in latest_v.split('.')]
+            
+            if late_parts > curr_parts:
+                if messagebox.askyesno("發現新版本", f"發現新版本 v{latest_v}！\n目前版本: v{APP_VERSION}\n\n是否立即前往下載頁面？"):
+                    webbrowser.open(download_url)
+            else:
+                messagebox.showinfo("版本資訊", f"目前版本 (v{APP_VERSION}) 已是最新！")
+        except:
+            messagebox.showinfo("檢查完成", f"GitHub 最新版本為: v{latest_v}\n目前版本為: v{APP_VERSION}")
 
 
 # ═══════════════════════════════════════════════════════════════
