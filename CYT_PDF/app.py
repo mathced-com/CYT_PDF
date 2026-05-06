@@ -20,7 +20,7 @@ import customtkinter as ctk
 # ─────────────────────────────────────────────
 # 專案資訊 (由 release_helper.py 讀取)
 # ─────────────────────────────────────────────
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 GITHUB_REPO = "ced-cyt/CYT_PDF" # 請根據實際 GitHub 帳號修改
 
 

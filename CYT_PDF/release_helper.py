@@ -147,9 +147,23 @@ def main():
     try:
         import zipfile
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # 寫入執行檔與說明檔
             zipf.write(exe_path, os.path.basename(exe_path))
             if os.path.exists(txt_path):
                 zipf.write(txt_path, os.path.basename(txt_path))
+            
+            # 新增：打包 poppler 資料夾
+            poppler_dir = "poppler-26.02.0"
+            if os.path.exists(poppler_dir):
+                print(f"      [OK] 偵測到 Poppler，正在打包...")
+                for root, dirs, files in os.walk(poppler_dir):
+                    for file in files:
+                        file_full_path = os.path.join(root, file)
+                        # 保持相對目錄結構
+                        zipf.write(file_full_path, file_full_path)
+            else:
+                print(f"      [Warning] 找不到 {poppler_dir}，壓縮包可能不完整！")
+                
         print(f"      [OK] 壓縮完成: {zip_path}")
     except Exception as e:
         print(f"      [Error] 壓縮失敗: {e}")
