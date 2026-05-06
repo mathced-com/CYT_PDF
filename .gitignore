@@ -1,0 +1,22 @@
+# Python 暫存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller 打包產出 (重要：這些不該進倉庫)
+build/
+dist/
+*.spec
+
+# 環境設定
+.venv/
+env/
+venv/
+.env
+
+# IDE 設定
+.vscode/
+.idea/
+
+# 專案特定暫存
+poppler-26.02.0/
