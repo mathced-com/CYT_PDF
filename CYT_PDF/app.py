@@ -20,8 +20,8 @@ import customtkinter as ctk
 # ─────────────────────────────────────────────
 # 專案資訊 (由 release_helper.py 讀取)
 # ─────────────────────────────────────────────
-APP_VERSION = "1.1.2"
-GITHUB_REPO = "ced-cyt/CYT_PDF" # 請根據實際 GitHub 帳號修改
+APP_VERSION = "1.1.4"
+GITHUB_REPO = "mathced-com/CYT_PDF" # 請根據實際 GitHub 帳號修改
 
 
 
@@ -31,7 +31,7 @@ GITHUB_REPO = "ced-cyt/CYT_PDF" # 請根據實際 GitHub 帳號修改
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-APP_TITLE  = "CYT PDF 工具"
+APP_TITLE  = f"CYT PDF 工具 v{APP_VERSION}"
 APP_WIDTH  = 1100
 APP_HEIGHT = 700  # 稍微增加高度以容納更多內容
 SIDEBAR_W  = 200
