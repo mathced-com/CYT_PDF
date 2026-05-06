@@ -1,5 +1,7 @@
 import os
 import pypdf
+import io
+from PIL import Image
 from typing import Callable, Dict
 from pdf2image import convert_from_path, pdfinfo_from_path
 from pdf2image.exceptions import (
@@ -7,8 +9,9 @@ from pdf2image.exceptions import (
     PDFPageCountError, 
     PDFSyntaxError
 )
-
-)
+# Poppler 執行檔路徑 (用於 PDF 轉圖)
+# 建議放在專案目錄下，方便打包
+POPPLER_PATH = os.path.join(os.path.dirname(__file__), "poppler-26.02.0", "Library", "bin")
 
 class EncryptedPDFError(Exception):
     """自訂例外：當 PDF 受密碼保護且未能解密時拋出"""
@@ -16,82 +19,134 @@ class EncryptedPDFError(Exception):
         self.filepath = filepath
         super().__init__(f"檔案受密碼保護: {filepath}")
 
-def merge_pdfs(
-    input_paths: list[str], 
-    output_path: str, 
-    passwords: Dict[str, str] | None = None
-) -> tuple[bool, str]:
+def merge_pdfs(pdf_list: list[str], output_folder: str, output_filename: str, callback: Callable[[float], None] | None = None) -> tuple[bool, str]:
     """
     合併多個 PDF 檔案。
-    - 處理了資源釋放 (防止檔案佔用)
-    - 處理密碼加密問題
     """
-    if passwords is None:
-        passwords = {}
-        
-    merger = pypdf.PdfWriter()
-    file_handles = []
-    
     try:
-        for path in input_paths:
-            f = open(path, "rb")
-            file_handles.append(f)
-            reader = pypdf.PdfReader(f)
+        writer = pypdf.PdfWriter()
+        total = len(pdf_list)
+        
+        if not output_filename.lower().endswith(".pdf"):
+            output_filename += ".pdf"
             
-            # 檢查是否加密
-            if reader.is_encrypted:
-                pwd = passwords.get(path, "")
-                if not reader.decrypt(pwd):
-                    # 解密失敗拋出例外，供 GUI 捕捉並要求輸入密碼
-                    raise EncryptedPDFError(path)
-                    
-            merger.append(reader)
+        output_path = os.path.join(output_folder, output_filename)
+
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder, exist_ok=True)
+
+        for i, pdf in enumerate(pdf_list):
+            writer.append(pdf)
+            if callback:
+                callback((i + 1) / total)
+        
+        with open(output_path, "wb") as f:
+            writer.write(f)
             
-        with open(output_path, "wb") as out_f:
-            merger.write(out_f)
-            
-        return True, f"成功合併至:\n{output_path}"
-    except EncryptedPDFError as e:
-        raise e
+        return True, f"合併成功！檔案已儲存至：\n{output_path}"
     except Exception as e:
         return False, f"合併失敗: {str(e)}"
     finally:
-        # 確保所有檔案被關閉，避免資源洩漏
-        for f in file_handles:
-            try:
-                f.close()
-            except:
-                pass
         try:
-            merger.close()
+            writer.close()
         except:
             pass
 
+def parse_range_string(ranges: str, total_pages: int) -> list[int]:
+    """
+    解析範圍字串（如 "1-5, 8, 10-12"）並回傳 0-indexed 的頁碼列表。
+    """
+    target_pages = set()
+    if not ranges.strip():
+        return list(range(total_pages))
+        
+    parts = ranges.replace(" ", "").split(",")
+    for part in parts:
+        try:
+            if "-" in part:
+                start_str, end_str = part.split("-")
+                s = int(start_str)
+                e = int(end_str)
+                for p in range(s, e + 1):
+                    if 1 <= p <= total_pages:
+                        target_pages.add(p - 1)
+            else:
+                p = int(part)
+                if 1 <= p <= total_pages:
+                    target_pages.add(p - 1)
+        except ValueError:
+            continue # 忽略格式錯誤的部分
+            
+    return sorted(list(target_pages))
+
+def split_pdf(
+    input_path: str, 
+    output_folder: str, 
+    mode: str = "single",  # "single" (一頁一檔案), "range" (多頁合成一檔)
+    ranges: str = "",      
+    custom_name: str = "",
+    callback: Callable[[float], None] | None = None
+) -> tuple[bool, str]:
+    """
+    拆分 PDF 檔案。
+    """
+    try:
+        reader = pypdf.PdfReader(input_path)
+        total_pages = len(reader.pages)
+        base_name = custom_name if custom_name else os.path.splitext(os.path.basename(input_path))[0]
+
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder, exist_ok=True)
+
+        target_indices = parse_range_string(ranges, total_pages)
+        if not target_indices:
+            return False, "未偵測到有效的頁碼範圍。"
+
+        if mode == "single":
+            # 一頁一檔案
+            for i, p_idx in enumerate(target_indices):
+                writer = pypdf.PdfWriter()
+                writer.add_page(reader.pages[p_idx])
+                output_filename = f"{base_name}_page_{p_idx+1:03d}.pdf"
+                with open(os.path.join(output_folder, output_filename), "wb") as f:
+                    writer.write(f)
+                
+                if callback:
+                    callback((i + 1) / len(target_indices))
+            return True, f"成功！已將選取的 {len(target_indices)} 頁分別儲存為單一檔案。"
+
+        elif mode == "range":
+            # 多頁合成一檔
+            writer = pypdf.PdfWriter()
+            for i, p_idx in enumerate(target_indices):
+                writer.add_page(reader.pages[p_idx])
+                if callback:
+                    callback((i + 1) / len(target_indices))
+            
+            output_filename = f"{base_name}_extracted.pdf"
+            with open(os.path.join(output_folder, output_filename), "wb") as f:
+                writer.write(f)
+            
+            return True, f"成功！已將選取的 {len(target_indices)} 頁合併提取至 {output_filename}"
+
+    except Exception as e:
+        return False, f"拆分失敗：\n{str(e)}"
 
 def pdf_to_jpg(
     input_path: str, 
     output_folder: str, 
     dpi: int = 200, 
-    quality: int = 80, 
-    progress_callback: Callable[[float], None] | None = None
+    quality: int = 85, 
+    ranges: str = "", 
+    custom_name: str = "",
+    callback: Callable[[float], None] | None = None
 ) -> tuple[bool, str]:
     """
     將 PDF 轉換為一系列 JPG 圖片。
-    
-    Args:
-        input_path: PDF 檔案路徑
-        output_folder: 輸出的資料夾路徑
-        dpi: 解析度 (Dots Per Inch)
-        quality: JPG 品質 (1-100)
-        progress_callback: 進度回呼函式，接收一個 0.0 到 1.0 的浮點數
-        
-    Returns:
-        (是否成功, 訊息)
     """
     try:
-        # 1. 取得 PDF 資訊（主要為了取得總頁數）
-        # 如果 poppler 未安裝，這裡通常會噴出 PDFInfoNotInstalledError
-        info = pdfinfo_from_path(input_path)
+        # 1. 取得 PDF 資訊
+        info = pdfinfo_from_path(input_path, poppler_path=POPPLER_PATH)
         total_pages = info["Pages"]
         
         if total_pages == 0:
@@ -101,30 +156,36 @@ def pdf_to_jpg(
         if not os.path.exists(output_folder):
             os.makedirs(output_folder, exist_ok=True)
             
-        base_name = os.path.splitext(os.path.basename(input_path))[0]
+        base_name = custom_name if custom_name else os.path.splitext(os.path.basename(input_path))[0]
         
+        target_indices = parse_range_string(ranges, total_pages)
+        if not target_indices:
+            return False, "未偵測到有效的頁碼範圍。"
+
         # 3. 逐頁轉換以回傳進度
-        for i in range(1, total_pages + 1):
+        for i, p_idx in enumerate(target_indices):
+            page_num = p_idx + 1
             # 轉換單一頁面
             pages = convert_from_path(
                 input_path, 
-                first_page=i, 
-                last_page=i, 
+                first_page=page_num, 
+                last_page=page_num, 
                 dpi=dpi,
-                fmt="jpeg"
+                fmt="jpeg",
+                poppler_path=POPPLER_PATH
             )
             
             if pages:
                 # 存檔
-                output_filename = f"{base_name}_page_{i:03d}.jpg"
+                output_filename = f"{base_name}_page_{page_num:03d}.jpg"
                 save_path = os.path.join(output_folder, output_filename)
                 pages[0].save(save_path, "JPEG", quality=quality)
             
             # 4. 回傳進度 (0.0 ~ 1.0)
-            if progress_callback:
-                progress_callback(i / total_pages)
+            if callback:
+                callback((i + 1) / len(target_indices))
                 
-        return True, f"成功！已將 {total_pages} 頁轉換並儲存至 {output_folder}"
+        return True, f"成功！已將選取的 {len(target_indices)} 頁轉換為圖片並儲存至 {output_folder}"
 
     except PDFInfoNotInstalledError:
         return False, (
@@ -141,6 +202,85 @@ def pdf_to_jpg(
         return False, "PDF 語法錯誤，無法處理該檔案。"
     except Exception as e:
         return False, f"轉換過程中發生非預期錯誤：\n{str(e)}"
+
+def compress_pdf(
+    input_path: str,
+    output_folder: str,
+    quality: str = "medium", # "low", "medium", "high"
+    custom_name: str = "",
+    callback: Callable[[float], None] | None = None
+) -> tuple[bool, str]:
+    """
+    壓縮 PDF 檔案大小。
+    """
+    try:
+        reader = pypdf.PdfReader(input_path)
+        writer = pypdf.PdfWriter()
+        
+        base_name = custom_name if custom_name else os.path.splitext(os.path.basename(input_path))[0]
+        output_filename = f"{base_name}_compressed.pdf"
+        output_path = os.path.join(output_folder, output_filename)
+
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder, exist_ok=True)
+
+        # 根據等級決定圖片品質與縮放限制
+        img_quality = 65 if quality == "low" else (40 if quality == "medium" else 20)
+        max_dim = 1800 if quality == "low" else (1200 if quality == "medium" else 800)
+
+        processed_ids = set()
+
+        total_pages = len(reader.pages)
+        for i, page in enumerate(reader.pages):
+            new_page = writer.add_page(page)
+            new_page.compress_content_streams() # 壓縮文字與路徑
+            
+            try:
+                for img_proxy in new_page.images:
+                    try:
+                        img_id = img_proxy.indirect_reference.idnum
+                    except:
+                        continue 
+
+                    if img_id not in processed_ids:
+                        # 取得原始資料大小
+                        original_data_size = len(img_proxy.data)
+                        pil_img = img_proxy.image
+                        
+                        # 轉為 RGB 以確保 JPEG 壓縮效率 (移除透明通道)
+                        if pil_img.mode in ("RGBA", "P"):
+                            pil_img = pil_img.convert("RGB")
+                        
+                        w, h = pil_img.size
+                        if max(w, h) > max_dim:
+                            ratio = max_dim / max(w, h)
+                            pil_img = pil_img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+                        
+                        # 在記憶體中模擬壓縮後的結果
+                        img_byte_arr = io.BytesIO()
+                        pil_img.save(img_byte_arr, format="JPEG", quality=img_quality)
+                        compressed_data_size = img_byte_arr.tell()
+
+                        # 終極保換：只有當壓縮後真的變小，才進行替換
+                        if compressed_data_size < original_data_size:
+                            img_proxy.replace(pil_img, quality=img_quality)
+                        
+                        processed_ids.add(img_id)
+            except Exception as e:
+                pass
+                
+            if callback:
+                callback((i + 1) / total_pages)
+
+        # 寫入檔案時，嘗試啟動內部壓縮
+        # pypdf 會在 write 時自動對未壓縮的物件進行 FlateDecode
+        with open(output_path, "wb") as f:
+            writer.write(f)
+
+        return True, output_path
+    except Exception as e:
+        return False, f"壓縮失敗: {str(e)}"
+
 
 if __name__ == "__main__":
     # 測試程式碼（僅供開發參考）
