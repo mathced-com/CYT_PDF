@@ -20,7 +20,7 @@ import customtkinter as ctk
 # ─────────────────────────────────────────────
 # 專案資訊 (由 release_helper.py 讀取)
 # ─────────────────────────────────────────────
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.2.4"
 GITHUB_REPO = "mathced-com/CYT_PDF" # 請根據實際 GitHub 帳號修改
 
 
@@ -1198,6 +1198,319 @@ class WatermarkPage(BasePage):
         ctk.CTkLabel(self, text="文字或圖片浮水印", text_color="gray").pack()
 
 
+class EditPage(BasePage):
+    """
+    PDF 頁面編輯：高效能縮圖快取、選中不重繪、僅操作時更新。
+    """
+
+    def build_ui(self):
+        self.pages_data: list[dict] = [] 
+        self.selected_idx: int | None = None
+        self.thumb_cache: dict[str, any] = {} # 快取 CTkImage 對象
+        self.thumb_frames: list[ctk.CTkFrame] = [] # 儲存所有縮圖框架的引用
+        
+        self.input_file: str = ""
+        self.output_folder: str = ""
+        
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(3, weight=1)
+
+        # 1. 標題
+        title_frame = ctk.CTkFrame(self, fg_color="transparent")
+        title_frame.grid(row=0, column=0, pady=(20, 10), sticky="w", padx=30)
+        ctk.CTkLabel(title_frame, text="PDF 頁面編輯", font=ctk.CTkFont(size=24, weight="bold")).pack(side="left")
+        ctk.CTkLabel(title_frame, text=" (💡 若預覽圖顯示不全，請點擊「刷新」按鈕補齊)", font=ctk.CTkFont(size=12), text_color="gray").pack(side="left", padx=10, pady=(8,0))
+
+        # 2. 來源檔案與輸出設定 (緊湊化)
+        self.settings_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.settings_container.grid(row=1, column=0, padx=30, sticky="ew")
+        self.settings_container.columnconfigure(0, weight=1)
+
+        # 來源
+        self.file_frame = ctk.CTkFrame(self.settings_container)
+        self.file_frame.grid(row=0, column=0, pady=2, sticky="ew")
+        self.file_frame.columnconfigure(1, weight=1)
+        ctk.CTkLabel(self.file_frame, text="來源檔案:").grid(row=0, column=0, padx=10, pady=5)
+        self.file_label = ctk.CTkLabel(self.file_frame, text="尚未選擇檔案...", text_color="gray")
+        self.file_label.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+        
+        # 新增頁數顯示標籤
+        self.page_info_label = ctk.CTkLabel(self.file_frame, text="", text_color="#3498DB", font=ctk.CTkFont(size=12, weight="bold"))
+        self.page_info_label.grid(row=0, column=2, padx=10, pady=5)
+        
+        ctk.CTkButton(self.file_frame, text="選擇 PDF", width=90, height=28, command=self._load_pdf).grid(row=0, column=3, padx=10, pady=5)
+
+        # 輸出
+        self.output_frame = ctk.CTkFrame(self.settings_container)
+        self.output_frame.grid(row=1, column=0, pady=2, sticky="ew")
+        self.output_frame.columnconfigure(1, weight=1)
+        ctk.CTkLabel(self.output_frame, text="輸出設定:").grid(row=0, column=0, padx=10, pady=2)
+        self.folder_label = ctk.CTkLabel(self.output_frame, text="預設目錄...", text_color="gray", font=ctk.CTkFont(size=11))
+        self.folder_label.grid(row=0, column=1, padx=10, pady=2, sticky="w")
+        self.filename_entry = ctk.CTkEntry(self.output_frame, placeholder_text="自訂檔名", height=28)
+        self.filename_entry.grid(row=1, column=1, padx=10, pady=2, sticky="ew")
+        ctk.CTkButton(self.output_frame, text="瀏覽...", width=60, height=28, command=self._select_folder).grid(row=0, column=2, padx=10, pady=5)
+
+        # 3. 操作工具列
+        self.action_bar = ctk.CTkFrame(self, fg_color="transparent")
+        self.action_bar.grid(row=2, column=0, padx=30, pady=10, sticky="ew")
+        
+        self.rot_l_btn = ctk.CTkButton(self.action_bar, text="⟲ 左旋", width=80, state="disabled", command=lambda: self._rotate_selected(-90))
+        self.rot_l_btn.pack(side="left", padx=2)
+        self.rot_r_btn = ctk.CTkButton(self.action_bar, text="⟳ 右旋", width=80, state="disabled", command=lambda: self._rotate_selected(90))
+        self.rot_r_btn.pack(side="left", padx=2)
+        self.del_btn   = ctk.CTkButton(self.action_bar, text="✕ 刪除", width=80, state="disabled", fg_color="#E74C3C", hover_color="#C0392B", command=self._delete_selected)
+        self.del_btn.pack(side="left", padx=(2, 10))
+        
+        self.ins_btn = ctk.CTkButton(self.action_bar, text="➕ 插入頁面", width=100, fg_color="gray40", state="disabled", command=self._insert_file)
+        self.ins_btn.pack(side="left", padx=2)
+        
+        # 讓刷新按鈕稍微顯眼一點
+        self.refresh_btn = ctk.CTkButton(self.action_bar, text="🔄 刷新網格", width=90, fg_color="#34495E", hover_color="#2C3E50", command=self._refresh_thumbnails)
+        self.refresh_btn.pack(side="left", padx=2)
+        
+        self.move_l_btn = ctk.CTkButton(self.action_bar, text="⬅️ 前移", width=80, state="disabled", command=lambda: self._move_page(-1))
+        self.move_l_btn.pack(side="left", padx=(20, 2))
+        self.move_r_btn = ctk.CTkButton(self.action_bar, text="➡️ 後移", width=80, state="disabled", command=lambda: self._move_page(1))
+        self.move_r_btn.pack(side="left", padx=2)
+
+        self.save_btn = ctk.CTkButton(self.action_bar, text="💾 儲存 PDF", width=120, fg_color="#27AE60", hover_color="#219150", font=ctk.CTkFont(weight="bold"), command=self._save_edit)
+        self.save_btn.pack(side="right", padx=5)
+
+        # 4. 主縮圖網格
+        self.scroll_area = ctk.CTkScrollableFrame(self)
+        self.scroll_area.grid(row=3, column=0, padx=30, pady=(0, 10), sticky="nsew")
+
+        # 5. 底部進度
+        self.progress_bar = ctk.CTkProgressBar(self, height=8)
+        self.progress_bar.grid(row=4, column=0, padx=30, pady=(0, 10), sticky="ew")
+        self.progress_bar.set(0)
+
+
+    def _load_pdf(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(filetypes=[("PDF 檔案", "*.pdf")])
+        if path:
+            self.input_file = path
+            import os
+            import pypdf
+            self.file_label.configure(text=os.path.basename(path), text_color=("gray10", "gray90"))
+            self.filename_entry.delete(0, "end")
+            self.filename_entry.insert(0, os.path.splitext(os.path.basename(path))[0] + "_edited")
+            
+            self.pages_data = []
+            self.thumb_cache = {} # 修正：開啟新檔案時必須清空舊快取，避免圖片錯置
+            self.selected_idx = None
+            
+            try:
+                reader = pypdf.PdfReader(path)
+                for i in range(len(reader.pages)):
+                    self.pages_data.append({"path": path, "idx": i, "rotation": 0})
+                
+                self.update() # 先讓 UI 元件定位完成
+                self._refresh_thumbnails()
+                self._update_btn_states()
+            except Exception as e:
+                import tkinter.messagebox as messagebox
+                messagebox.showerror("錯誤", f"讀取失敗：\n{e}")
+
+    def _select_folder(self):
+        from tkinter import filedialog
+        path = filedialog.askdirectory()
+        if path:
+            self.output_folder = path
+            self.folder_label.configure(text=path, text_color=("gray10", "gray90"))
+
+
+    def _refresh_thumbnails(self):
+        """重建整個縮圖網格，精準清理避免破壞底層構造"""
+        for f in self.thumb_frames:
+            if f.winfo_exists(): f.destroy()
+        
+        self.thumb_frames = []
+        cols = 5 
+        for c in range(cols):
+            self.scroll_area.grid_columnconfigure(c, weight=1)
+
+        import time
+        for i, data in enumerate(self.pages_data):
+            is_sel = (i == self.selected_idx)
+            frame = ctk.CTkFrame(self.scroll_area, 
+                                 fg_color=("gray80", "gray35") if is_sel else "transparent", 
+                                 border_width=2 if is_sel else 0, 
+                                 border_color="#3B8ED0")
+            frame.grid(row=i // cols, column=i % cols, padx=12, pady=12, sticky="nsew")
+            self.thumb_frames.append(frame)
+            
+            thumb_label = ctk.CTkLabel(frame, text="⌛", width=110, height=145)
+            thumb_label.pack(pady=(12, 5), padx=12)
+            
+            # 使用快取或非同步載入
+            self._update_single_thumbnail(i, thumb_label)
+            
+            ctk.CTkLabel(frame, text=f"P.{i+1}", font=ctk.CTkFont(size=11, weight="bold")).pack(pady=(0, 10))
+            
+            for w in [frame, thumb_label]:
+                w.bind("<Button-1>", lambda e, idx=i: self._select_page(idx))
+            
+            # 💡 關鍵優化：若頁數較多，每建立一個縮圖稍微暫停一下，避免瞬間過載
+            if len(self.pages_data) > 10:
+                self.update() # 讓 UI 有機會喘息
+        
+        self.update_idletasks()
+
+    def _update_single_thumbnail(self, index, label=None):
+        """局部更新單一縮圖：利用記憶體旋轉，不重新讀取 PDF"""
+        if index >= len(self.pages_data): return
+        data = self.pages_data[index]
+        if label is None:
+            if index < len(self.thumb_frames):
+                frame = self.thumb_frames[index]
+                for child in frame.winfo_children():
+                    if isinstance(child, ctk.CTkLabel) and child.cget("width") == 110:
+                        label = child
+                        break
+        if not label: return
+        
+        raw_key = f"{data['path']}_{data['idx']}"
+        if raw_key in self.thumb_cache:
+            self._apply_rotated_image(self.thumb_cache[raw_key], data["rotation"], label)
+        else:
+            label.configure(image="", text="⌛")
+            self.run_in_thread(self._get_raw_thumbnail, data, raw_key, 
+                               on_success=lambda res, lbl=label, rot=data["rotation"]: self._on_raw_thumb_loaded(res, lbl, rot))
+
+    def _get_raw_thumbnail(self, data, raw_key):
+        import pdf_utils
+        try:
+            img = pdf_utils.generate_page_thumbnail(data["path"], data["idx"], rotation=0)
+            return (raw_key, img)
+        except: return (raw_key, None)
+
+    def _on_raw_thumb_loaded(self, result, label, rotation):
+        raw_key, raw_img = result
+        if raw_img:
+            self.thumb_cache[raw_key] = raw_img
+            if label.winfo_exists(): self._apply_rotated_image(raw_img, rotation, label)
+        else:
+            if label.winfo_exists(): label.configure(text="❌")
+
+    def _apply_rotated_image(self, pil_img, rotation, label):
+        display_img = pil_img.rotate(-rotation, expand=True) if rotation != 0 else pil_img
+        ctk_img = ctk.CTkImage(light_image=display_img, dark_image=display_img, size=(110, 145))
+        if label.winfo_exists(): label.configure(image=ctk_img, text="")
+
+    def _select_page(self, index):
+        """局部更新選中狀態"""
+        if self.selected_idx == index: return
+        
+        if self.selected_idx is not None and self.selected_idx < len(self.thumb_frames):
+            old_f = self.thumb_frames[self.selected_idx]
+            if old_f.winfo_exists():
+                old_f.configure(fg_color="transparent", border_width=0)
+        
+        self.selected_idx = index
+        if index < len(self.thumb_frames):
+            new_f = self.thumb_frames[index]
+            if new_f.winfo_exists():
+                new_f.configure(fg_color=("gray80", "gray35"), border_width=2, border_color="#3B8ED0")
+        
+        self._update_btn_states()
+
+    def _insert_file(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(filetypes=[("PDF/圖片 檔案", "*.pdf;*.jpg;*.png;*.jpeg")])
+        if not path: return
+        
+        self.ins_btn.configure(state="disabled", text="處理中...")
+        self.update_idletasks()
+        
+        import pypdf
+        import os
+        try:
+            insert_pos = self.selected_idx + 1 if self.selected_idx is not None else len(self.pages_data)
+            if path.lower().endswith(".pdf"):
+                reader = pypdf.PdfReader(path)
+                for i in range(len(reader.pages)):
+                    self.pages_data.insert(insert_pos + i, {"path": path, "idx": i, "rotation": 0})
+            else:
+                self.pages_data.insert(insert_pos, {"path": path, "idx": -1, "rotation": 0})
+                
+            self.selected_idx = insert_pos
+            self._refresh_thumbnails()
+            self._update_btn_states()
+        except Exception as e:
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("插入失敗", f"無法讀取檔案：\n{e}")
+        finally:
+            self.ins_btn.configure(state="normal", text="➕ 插入頁面")
+
+    def _update_btn_states(self):
+        s = "normal" if self.selected_idx is not None else "disabled"
+        self.rot_l_btn.configure(state=s)
+        self.rot_r_btn.configure(state=s)
+        self.del_btn.configure(state=s)
+        self.ins_btn.configure(state=s)
+        self.refresh_btn.configure(state="normal" if self.pages_data else "disabled")
+        
+        # 更新頁數資訊
+        if self.pages_data:
+            self.page_info_label.configure(text=f"共 {len(self.pages_data)} 頁")
+        else:
+            self.page_info_label.configure(text="")
+            
+        self.move_l_btn.configure(state="normal" if self.selected_idx is not None and self.selected_idx > 0 else "disabled")
+        self.move_r_btn.configure(state="normal" if self.selected_idx is not None and self.selected_idx < len(self.pages_data)-1 else "disabled")
+
+    def _rotate_selected(self, angle):
+        """旋轉：僅局部刷新，速度提升數百倍"""
+        if self.selected_idx is not None:
+            self.pages_data[self.selected_idx]["rotation"] = (self.pages_data[self.selected_idx]["rotation"] + angle) % 360
+            # 只更新當前選中的那一格，不重繪網格
+            self._update_single_thumbnail(self.selected_idx)
+
+    def _delete_selected(self):
+        if self.selected_idx is not None:
+            self.pages_data.pop(self.selected_idx)
+            self.selected_idx = None
+            self._update_btn_states()
+            self._refresh_thumbnails()
+
+    def _move_page(self, step):
+        if self.selected_idx is not None:
+            new_idx = self.selected_idx + step
+            if 0 <= new_idx < len(self.pages_data):
+                self.pages_data[self.selected_idx], self.pages_data[new_idx] = self.pages_data[new_idx], self.pages_data[self.selected_idx]
+                self.selected_idx = new_idx
+                self._update_btn_states()
+                self._refresh_thumbnails()
+
+    def _save_edit(self):
+        if not self.pages_data: return
+        import os
+        out_f = self.output_folder if self.output_folder else os.path.dirname(self.input_file)
+        out_n = self.filename_entry.get().strip()
+        if not out_n: out_n = "result_edited"
+        path = os.path.join(out_f, f"{out_n}.pdf")
+        
+        self.save_btn.configure(state="disabled")
+        self.progress_bar.set(0.5)
+        
+        import pdf_utils
+        self.run_in_thread(
+            pdf_utils.save_manipulated_pdf,
+            self.pages_data, path,
+            on_success=lambda msg: self._on_save_success(msg)
+        )
+
+    def _on_save_success(self, msg):
+        self.save_btn.configure(state="normal")
+        self.progress_bar.set(1)
+        import tkinter.messagebox as messagebox
+        messagebox.showinfo("完成", f"PDF 編輯已儲存成功！\n路徑：{msg}")
+
+    """設定頁面"""
+
 class SettingsPage(BasePage):
     """設定頁面"""
 
@@ -1244,6 +1557,7 @@ NAV_ITEMS: list[tuple[str, str]] = [
     ("🖼️  PDF 轉圖",   "convert"),
     ("✂️  PDF 拆分",   "split"),
     ("🗜️  PDF 壓縮",   "compress"),
+    ("🛠️  頁面編輯",   "edit"),
 ]
 
 
@@ -1412,6 +1726,7 @@ class PDFApp(ctk.CTk):
             "convert":   ConvertPage,
             "split":     SplitPage,
             "compress":  CompressPage,
+            "edit":      EditPage,
             "settings":  SettingsPage,
         }
         for key, cls in page_classes.items():

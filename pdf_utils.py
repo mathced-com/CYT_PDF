@@ -266,14 +266,13 @@ def compress_pdf(
                             img_proxy.replace(pil_img, quality=img_quality)
                         
                         processed_ids.add(img_id)
-            except Exception as e:
+            except Exception:
                 pass
-                
+            
             if callback:
                 callback((i + 1) / total_pages)
 
-        # 寫入檔案時，嘗試啟動內部壓縮
-        # pypdf 會在 write 時自動對未壓縮的物件進行 FlateDecode
+        # 寫入檔案
         with open(output_path, "wb") as f:
             writer.write(f)
 
@@ -281,12 +280,84 @@ def compress_pdf(
     except Exception as e:
         return False, f"壓縮失敗: {str(e)}"
 
+# ── 頁面編輯類功能 ─────────────────────────────────────────────
 
-if __name__ == "__main__":
-    # 測試程式碼（僅供開發參考）
-    def my_progress(p):
-        print(f"目前進度: {p*100:.1f}%")
+def generate_page_thumbnail(path: str, page_idx: int, rotation: int = 0):
+    """
+    生成指定頁面的縮圖。
+    如果是 PDF 且 idx >= 0，則提取頁面；如果是圖片，則直接讀取。
+    """
+    from PIL import Image
+    import os
+    
+    try:
+        if path.lower().endswith((".jpg", ".png", ".jpeg")):
+            img = Image.open(path)
+        else:
+            from pdf2image import convert_from_path
+            # Windows 下需指定 poppler 路徑
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            poppler_path = os.path.join(base_dir, "poppler-26.02.0", "Library", "bin")
+            if not os.path.exists(poppler_path):
+                # 嘗試開發環境下的路徑 (如果 pdf_utils 在子目錄)
+                poppler_path = os.path.join(os.path.dirname(base_dir), "poppler-26.02.0", "Library", "bin")
+            
+            if not os.path.exists(poppler_path): poppler_path = None
+            
+            images = convert_from_path(path, first_page=page_idx+1, last_page=page_idx+1, poppler_path=poppler_path)
+            if not images: return None
+            img = images[0]
         
-    # success, msg = pdf_to_jpg("test.pdf", "output", progress_callback=my_progress)
-    # print(msg)
-    pass
+        # 套用旋轉
+        if rotation != 0:
+            img = img.rotate(-rotation, expand=True) # PIL 旋轉是逆時針，所以加負號
+            
+        return img
+    except:
+        return None
+
+def save_manipulated_pdf(pages_data: list, output_path: str):
+    """
+    根據編輯數據儲存 PDF。
+    data: list of {"path": str, "idx": int, "rotation": int}
+    """
+    import pypdf
+    from PIL import Image
+    import io
+    import os
+
+    writer = pypdf.PdfWriter()
+    readers = {} # 快取 Reader
+
+    try:
+        for item in pages_data:
+            path = item["path"]
+            idx = item["idx"]
+            rot = item["rotation"]
+            
+            if path.lower().endswith(".pdf") and idx >= 0:
+                if path not in readers:
+                    readers[path] = pypdf.PdfReader(path)
+                
+                page = readers[path].pages[idx]
+                if rot != 0:
+                    page.add_transformation(pypdf.Transformation().rotate(rot))
+                writer.add_page(page)
+            else:
+                # 處理圖片插入
+                img = Image.open(path).convert("RGB")
+                pdf_bytes = io.BytesIO()
+                img.save(pdf_bytes, format="PDF")
+                img_reader = pypdf.PdfReader(pdf_bytes)
+                page = img_reader.pages[0]
+                if rot != 0:
+                    page.add_transformation(pypdf.Transformation().rotate(rot))
+                writer.add_page(page)
+        
+        with open(output_path, "wb") as f:
+            writer.write(f)
+        return output_path
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return str(e)
