@@ -20,7 +20,7 @@ import customtkinter as ctk
 # ─────────────────────────────────────────────
 # 專案資訊 (由 release_helper.py 讀取)
 # ─────────────────────────────────────────────
-APP_VERSION = "1.2.4"
+APP_VERSION = "1.2.5"
 GITHUB_REPO = "mathced-com/CYT_PDF" # 請根據實際 GitHub 帳號修改
 
 
@@ -1198,6 +1198,272 @@ class WatermarkPage(BasePage):
         ctk.CTkLabel(self, text="文字或圖片浮水印", text_color="gray").pack()
 
 
+class DocxPage(BasePage):
+    """
+    PDF 轉 Word 頁面：將 PDF 轉換為可編輯的 Docx 檔案。
+    """
+
+    def build_ui(self):
+        self.input_file: str = ""
+        self.output_folder: str = ""
+
+        self.grid_columnconfigure(0, weight=1)
+
+        # 1. 標題
+        ctk.CTkLabel(self, text="PDF 轉 Word", font=ctk.CTkFont(size=24, weight="bold")).grid(row=0, column=0, pady=(20, 10), sticky="w", padx=30)
+
+        # 2. 來源檔案
+        self.file_frame = ctk.CTkFrame(self)
+        self.file_frame.grid(row=1, column=0, padx=30, pady=10, sticky="ew")
+        self.file_frame.columnconfigure(1, weight=1)
+        ctk.CTkLabel(self.file_frame, text="來源檔案:").grid(row=0, column=0, padx=10, pady=10)
+        self.file_label = ctk.CTkLabel(self.file_frame, text="尚未選擇檔案...", text_color="gray")
+        self.file_label.grid(row=0, column=1, padx=10, pady=10, sticky="w")
+        ctk.CTkButton(self.file_frame, text="選擇 PDF", width=100, command=self._select_file).grid(row=0, column=2, padx=10, pady=10)
+
+        # 3. 輸出設定 (目錄 & 檔名)
+        self.output_frame = ctk.CTkFrame(self)
+        self.output_frame.grid(row=2, column=0, padx=30, pady=10, sticky="ew")
+        self.output_frame.columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(self.output_frame, text="輸出目錄:").grid(row=0, column=0, padx=10, pady=5)
+        self.folder_label = ctk.CTkLabel(self.output_frame, text="預設為檔案所在目錄...", text_color="gray")
+        self.folder_label.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+        ctk.CTkButton(self.output_frame, text="瀏覽...", width=80, command=self._select_folder).grid(row=0, column=2, padx=10, pady=5)
+
+        ctk.CTkLabel(self.output_frame, text="自訂檔名:").grid(row=1, column=0, padx=10, pady=5)
+        self.filename_entry = ctk.CTkEntry(self.output_frame, placeholder_text="預設為來源檔名")
+        self.filename_entry.grid(row=1, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
+
+        # 4. 轉換模式 (數位保留排版 vs 掃描型 OCR)
+        self.settings_frame = ctk.CTkFrame(self)
+        self.settings_frame.grid(row=3, column=0, padx=30, pady=10, sticky="ew")
+        self.settings_frame.columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(self.settings_frame, text="轉換模式:").grid(row=0, column=0, padx=10, pady=10)
+        self.mode_var = ctk.StringVar(value="digital")
+        self.mode_switch = ctk.CTkSegmentedButton(
+            self.settings_frame, 
+            values=["數位排版 (適用文字版)", "擷取圖片中的文字"],
+            command=self._on_mode_change
+        )
+        self.mode_switch.set("數位排版 (適用文字版)")
+        self.mode_switch.grid(row=0, column=1, padx=10, pady=10, sticky="w")
+
+        # 說明提示
+        self.hint_label = ctk.CTkLabel(
+            self.settings_frame, 
+            text="💡 說明：專為「可選取/複製文字」的 PDF 設計。能完整還原原文件中的表格、段落及排版設計。", 
+            text_color="gray", 
+            font=ctk.CTkFont(size=12),
+            justify="left"
+        )
+        self.hint_label.grid(row=1, column=1, padx=10, pady=(0, 10), sticky="w")
+
+        # 5. 預覽與進度區域
+        self.bottom_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.bottom_container.grid(row=4, column=0, padx=30, pady=20, sticky="nsew")
+        self.bottom_container.columnconfigure(0, weight=1)
+
+        self.preview_frame = ctk.CTkFrame(self.bottom_container, width=160, height=220)
+        self.preview_frame.grid(row=0, column=0, padx=(0, 20), sticky="n")
+        self.preview_frame.grid_propagate(False)
+        self.preview_label = ctk.CTkLabel(self.preview_frame, text="等待預覽...", text_color="gray")
+        self.preview_label.place(relx=0.5, rely=0.5, anchor="center")
+
+        self.controls_frame = ctk.CTkFrame(self.bottom_container, fg_color="transparent")
+        self.controls_frame.grid(row=0, column=1, sticky="nsew")
+
+        self.start_btn = ctk.CTkButton(self.controls_frame, text="開始轉換", width=200, height=50, font=ctk.CTkFont(weight="bold"), command=self._start_convert)
+        self.start_btn.pack(pady=(0, 20))
+
+        self.info_label = ctk.CTkLabel(self.controls_frame, text="請選擇檔案以查看資訊", text_color="gray")
+        self.info_label.pack(pady=5)
+
+        self.progress_bar = ctk.CTkProgressBar(self.controls_frame, width=200)
+        self.progress_bar.pack(pady=10)
+        self.progress_bar.set(0)
+
+        self.status_label = ctk.CTkLabel(self.controls_frame, text="", text_color=("#3498DB", "#2980B9"), font=ctk.CTkFont(size=12, weight="bold"))
+        self.status_label.pack(pady=5)
+
+    def _on_mode_change(self, val):
+        if val == "數位排版 (適用文字版)":
+            self.mode_var.set("digital")
+            self.hint_label.configure(
+                text="💡 說明：專為「可選取/複製文字」的 PDF 設計。能完整還原原文件中的表格、段落及排版設計。",
+                justify="left"
+            )
+        else:
+            self.mode_var.set("ocr")
+            self.hint_label.configure(
+                text="💡 說明：專為「純圖片或掃描版」PDF 設計。將圖片中的文字擷取並匯出為 Word 文字段落。\n⚠️ 提示：若您的 Windows 系統缺少中文辨識元件，點擊轉換時會彈出對話框提供安裝指引。",
+                justify="left"
+            )
+
+    def reset_state(self):
+        self.input_file = ""
+        self.output_folder = ""
+        self.file_label.configure(text="尚未選擇檔案...", text_color="gray")
+        self.folder_label.configure(text="預設為檔案所在目錄...", text_color="gray")
+        self.info_label.configure(text="請選擇檔案以查看資訊", text_color="gray")
+        self.filename_entry.delete(0, "end")
+        self.mode_switch.set("數位排版 (適用文字版)")
+        self.mode_var.set("digital")
+        self.hint_label.configure(
+            text="💡 說明：專為「可選取/複製文字」的 PDF 設計。能完整還原原文件中的表格、段落及排版設計。",
+            justify="left"
+        )
+        self.progress_bar.set(0)
+        self.status_label.configure(text="")
+        self.preview_label.configure(text="等待預覽...", image=None)
+
+    def _select_file(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(filetypes=[("PDF 檔案", "*.pdf")])
+        if path:
+            self.input_file = path
+            import os
+            base = os.path.splitext(os.path.basename(path))[0]
+            self.file_label.configure(text=os.path.basename(path), text_color=("gray10", "gray90"))
+            self.filename_entry.delete(0, "end")
+            self.filename_entry.insert(0, base)
+            
+            import pypdf
+            try:
+                reader = pypdf.PdfReader(path)
+                total = len(reader.pages)
+                self.info_label.configure(text=f"總頁數：{total} 頁", text_color=("gray10", "gray90"))
+            except:
+                self.info_label.configure(text="無法讀取頁數資訊", text_color="red")
+
+            self.preview_label.configure(text="正在產生預覽...", image=None)
+            self.run_in_thread(self._get_preview_image, path, on_success=self._show_preview)
+
+    def _get_preview_image(self, path):
+        from pdf2image import convert_from_path
+        from pdf_utils import POPPLER_PATH
+        try:
+            pages = convert_from_path(path, first_page=1, last_page=1, dpi=72, poppler_path=POPPLER_PATH)
+            if pages: return pages[0]
+        except: return None
+
+    def _show_preview(self, pil_img):
+        if pil_img:
+            img_w, img_h = pil_img.size
+            ratio = min(140/img_w, 200/img_h)
+            new_size = (int(img_w * ratio), int(img_h * ratio))
+            ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=new_size)
+            self.preview_label.configure(text="", image=ctk_img)
+        else:
+            self.preview_label.configure(text="預覽不可用")
+
+    def _select_folder(self):
+        from tkinter import filedialog
+        path = filedialog.askdirectory()
+        if path:
+            self.output_folder = path
+            self.folder_label.configure(text=path, text_color=("gray10", "gray90"))
+
+    def _start_convert(self):
+        if not self.input_file:
+            import tkinter.messagebox as messagebox
+            messagebox.showwarning("提示", "請先選擇 PDF 檔案")
+            return
+
+        # 檢測 Windows 中文 OCR
+        if self.mode_var.get() == "ocr":
+            import pdf_utils
+            langs = pdf_utils.get_installed_ocr_languages()
+            has_chinese = any(lang.lower().startswith("zh") for lang in langs)
+            if not has_chinese:
+                import tkinter.messagebox as messagebox
+                # 第一步：詢問是否要一鍵安裝
+                auto_install = messagebox.askyesnocancel(
+                    "系統提示", 
+                    "偵測到您的 Windows 系統尚未安裝「中文 OCR 語言包」，辨識結果極可能會出現亂碼！\n\n"
+                    "是否要為您「一鍵自動安裝」中文 OCR 語言包？\n"
+                    "(💡 選擇「是」：將彈出系統管理員 UAC 權限視窗，自動開始安裝，耗時約 1~2 分鐘)\n"
+                    "(💡 選擇「否」：檢視 Windows 11 手動安裝步驟與說明)\n"
+                    "(💡 選擇「取消」：返回轉換頁面)",
+                    icon="warning"
+                )
+                
+                if auto_install is None: # 取消
+                    return
+                
+                if auto_install: # 是 (啟動自動安裝)
+                    import subprocess
+                    ps_cmd = (
+                        "Start-Process powershell -ArgumentList '-NoExit', '-Command', "
+                        "'Write-Host \"[Windows OCR 安裝程式] 正在線上安裝繁體中文 OCR 元件，請稍候...\" ; "
+                        "Add-WindowsCapability -Online -Name Language.OCR~~~zh-TW~0.0.1.0 ; "
+                        "Write-Host \"[安裝完成] 已成功啟用中文 OCR 辨識！必須【重新啟動電腦】後，系統才會正式加載中文辨識字庫！\"' -Verb RunAs"
+                    )
+                    cmd = ["powershell", "-Command", ps_cmd]
+                    try:
+                        subprocess.run(cmd)
+                        messagebox.showinfo("提示", "已啟動安裝程序！請在跳出的藍色命令視窗中查看進度。安裝完成後，必須【重新啟動電腦】才能啟用中文辨識功能。")
+                    except Exception as e:
+                        messagebox.showerror("錯誤", f"無法啟動自動安裝程序：\n{e}")
+                    return
+                else: # 否 (檢視手動安裝說明)
+                    messagebox.showinfo(
+                        "手動安裝指引 (Windows 11)",
+                        "💡 Windows 11 手動安裝中文 OCR 步驟：\n\n"
+                        "1. 開啟系統「設定」(可按快速鍵 Win + I)\n"
+                        "2. 點選左側「系統」 ➔ 進入右側「選用功能」(Optional Features)\n"
+                        "3. 點選最上方「檢視功能」按鈕\n"
+                        "4. 在搜尋框中輸入「OCR」或「光學」(💡 避免搜尋「中文」，在部分 Windows 中它會以英文「Chinese OCR」顯示)\n"
+                        "5. 勾選「中文 (台灣) 的光學字元辨識」(或 Chinese (Traditional) OCR) 並點選「安裝」即可。\n\n"
+                        "安裝完後重新啟動本軟體即可正常進行圖片文字擷取！"
+                    )
+                    return
+
+        import os
+        out_f = self.output_folder if self.output_folder else os.path.dirname(self.input_file)
+        out_n = self.filename_entry.get().strip()
+        
+        self.start_btn.configure(state="disabled")
+        self.progress_bar.set(0)
+        self.status_label.configure(text="準備開始轉換...", text_color=("#3498DB", "#2980B9"))
+
+        import pdf_utils
+        self.run_in_thread(
+            target=pdf_utils.convert_pdf_to_word,
+            input_path=self.input_file,
+            output_folder=out_f,
+            mode=self.mode_var.get(),
+            custom_name=out_n,
+            callback=self._update_progress,
+            on_success=self._on_success,
+            on_error=self._on_error
+        )
+
+    def _update_progress(self, progress: float, status_text: str):
+        self.after(0, lambda: self.progress_bar.set(progress))
+        self.after(0, lambda: self.status_label.configure(text=status_text))
+
+    def _on_success(self, result):
+        self.start_btn.configure(state="normal")
+        self.progress_bar.set(1)
+        success, msg = result
+        import tkinter.messagebox as messagebox
+        if success:
+            self.status_label.configure(text="轉換成功！", text_color="green")
+            messagebox.showinfo("完成", msg)
+        else:
+            self.status_label.configure(text="轉換失敗", text_color="red")
+            messagebox.showerror("錯誤", msg)
+
+    def _on_error(self, exc):
+        self.start_btn.configure(state="normal")
+        self.progress_bar.set(0)
+        self.status_label.configure(text="發生錯誤", text_color="red")
+        import tkinter.messagebox as messagebox
+        messagebox.showerror("錯誤", f"轉換失敗：\n{exc}")
+
+
 class EditPage(BasePage):
     """
     PDF 頁面編輯：高效能縮圖快取、選中不重繪、僅操作時更新。
@@ -1555,6 +1821,7 @@ class SettingsPage(BasePage):
 NAV_ITEMS: list[tuple[str, str]] = [
     ("📄  PDF 合併",   "merge"),
     ("🖼️  PDF 轉圖",   "convert"),
+    ("📝  PDF 轉 Word", "docx"),
     ("✂️  PDF 拆分",   "split"),
     ("🗜️  PDF 壓縮",   "compress"),
     ("🛠️  頁面編輯",   "edit"),
@@ -1724,6 +1991,7 @@ class PDFApp(ctk.CTk):
         page_classes: dict[str, type[BasePage]] = {
             "merge":     MergePage,
             "convert":   ConvertPage,
+            "docx":      DocxPage,
             "split":     SplitPage,
             "compress":  CompressPage,
             "edit":      EditPage,

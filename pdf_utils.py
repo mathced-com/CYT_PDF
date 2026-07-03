@@ -280,6 +280,248 @@ def compress_pdf(
     except Exception as e:
         return False, f"壓縮失敗: {str(e)}"
 
+def get_installed_ocr_languages() -> list[str]:
+    """
+    獲取系統已安裝的 Windows OCR 語言標籤。
+    """
+    import subprocess
+    import os
+    try:
+        ps_cmd = (
+            "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Runtime.WindowsRuntime'); "
+            "[void][Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]; "
+            "[Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages | Select-Object -ExpandProperty LanguageTag"
+        )
+        cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd]
+        
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore', startupinfo=startupinfo)
+        tags = [t.strip() for t in res.stdout.split('\n') if t.strip()]
+        return tags
+    except:
+        return []
+
+def convert_pdf_to_word(
+    input_path: str,
+    output_folder: str,
+    mode: str = "digital",  # "digital" or "ocr"
+    custom_name: str = "",
+    callback: Callable[[float, str], None] | None = None
+) -> tuple[bool, str]:
+    """
+    將 PDF 轉換為 Word (.docx) 檔案。
+    """
+    try:
+        import os
+        base_name = custom_name if custom_name else os.path.splitext(os.path.basename(input_path))[0]
+        output_filename = f"{base_name}.docx"
+        output_path = os.path.join(output_folder, output_filename)
+
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder, exist_ok=True)
+
+        if mode == "digital":
+            from pdf2docx import Converter
+            cv = Converter(input_path)
+            total_pages = len(cv.fitz_doc)
+            
+            if total_pages == 0:
+                cv.close()
+                return False, "該 PDF 檔案沒有任何頁面。"
+
+            # 1. 載入所有頁面
+            cv.load_pages(0, total_pages, None)
+            
+            # 2. 解析文件層級結構
+            settings = cv.default_settings
+            cv.parse_document(**settings)
+            
+            # 3. 逐頁進行佈局分析以更新進度
+            for i, page in enumerate(cv.pages):
+                if page.skip_parsing:
+                    continue
+                if callback:
+                    callback(i / total_pages, f"正在分析第 {i+1} 頁佈局 (共 {total_pages} 頁)...")
+                page.parse(**settings)
+            
+            if callback:
+                callback(0.95, "正在產生 Word 檔案...")
+                
+            # 4. 生成並儲存 docx (只存檔一次，保留所有頁面與表格)
+            cv.make_docx(output_path, **settings)
+            cv.close()
+            return True, f"轉換成功！Word 檔案已儲存至：\n{output_path}"
+
+        elif mode == "ocr":
+            import docx
+            from pdf2image import convert_from_path, pdfinfo_from_path
+            import subprocess
+            import tempfile
+            import time
+
+            # 偵測是否安裝中文 OCR
+            langs = get_installed_ocr_languages()
+            has_chinese = any(lang.lower().startswith("zh") for lang in langs)
+            if not has_chinese:
+                if callback:
+                    callback(0.0, "⚠️ 系統未安裝中文 OCR 語言包，辨識結果可能為英文/亂碼...")
+                time.sleep(2.5)
+
+            # 1. 取得 PDF 資訊
+            info = pdfinfo_from_path(input_path, poppler_path=POPPLER_PATH)
+            total_pages = info["Pages"]
+            if total_pages == 0:
+                return False, "該 PDF 檔案沒有任何頁面。"
+
+            doc = docx.Document()
+            
+            # 在臨時目錄中建立 OCR 腳本與影像
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # 寫入 PowerShell OCR 腳本
+                ps_script_path = os.path.join(temp_dir, "ocr.ps1")
+                ps_script_content = """param (
+    [string]$ImagePath
+)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+try {
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime
+    [void][Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+    [void][Windows.Graphics.Imaging.SoftwareBitmap, Windows.Foundation, ContentType = WindowsRuntime]
+    [void][Windows.Storage.StorageFile, Windows.Foundation, ContentType = WindowsRuntime]
+    [void][Windows.Storage.Streams.IRandomAccessStream, Windows.Foundation, ContentType = WindowsRuntime]
+
+    $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { 
+        $_.Name -eq 'AsTask' -and 
+        $_.GetParameters().Count -eq 1 -and 
+        $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' 
+    })[0]
+
+    function Await-WinRT($asyncOperation, $resultType) {
+        $asTask = $asTaskGeneric.MakeGenericMethod($resultType)
+        $netTask = $asTask.Invoke($null, @($asyncOperation))
+        $netTask.Wait(-1) | Out-Null
+        return $netTask.Result
+    }
+
+    $absPath = [System.IO.Path]::GetFullPath($ImagePath)
+    $fileOperation = [Windows.Storage.StorageFile]::GetFileFromPathAsync($absPath)
+    $file = Await-WinRT $fileOperation ([Windows.Storage.StorageFile])
+
+    $streamOperation = $file.OpenAsync([Windows.Storage.FileAccessMode]::Read)
+    $stream = Await-WinRT $streamOperation ([Windows.Storage.Streams.IRandomAccessStream])
+
+    $decoderOperation = [Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)
+    $decoder = Await-WinRT $decoderOperation ([Windows.Graphics.Imaging.BitmapDecoder])
+
+    $bitmapOperation = $decoder.GetSoftwareBitmapAsync()
+    $softwareBitmap = Await-WinRT $bitmapOperation ([Windows.Graphics.Imaging.SoftwareBitmap])
+
+    [void][Windows.Globalization.Language, Windows.Foundation, ContentType = WindowsRuntime]
+    $lang = New-Object Windows.Globalization.Language("zh-Hant-TW")
+    $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($lang)
+    if ($null -eq $engine) {
+        $lang = New-Object Windows.Globalization.Language("zh-Hans-CN")
+        $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($lang)
+    }
+    if ($null -eq $engine) {
+        $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+    }
+    if ($null -eq $engine) {
+        exit 1
+    }
+
+    $ocrOperation = $engine.RecognizeAsync($softwareBitmap)
+    $result = Await-WinRT $ocrOperation ([Windows.Media.Ocr.OcrResult])
+
+    Write-Output $result.Text
+}
+catch {
+    exit 1
+}
+"""
+                with open(ps_script_path, "w", encoding="utf-8") as f:
+                    f.write(ps_script_content)
+
+                # 逐頁轉圖並執行 OCR
+                for i in range(total_pages):
+                    page_num = i + 1
+                    
+                    if callback:
+                        callback(i / total_pages, f"正在將第 {page_num} 頁轉換為圖片...")
+                    
+                    # 轉單頁為圖片
+                    pages = convert_from_path(
+                        input_path, 
+                        first_page=page_num, 
+                        last_page=page_num, 
+                        dpi=150, 
+                        fmt="png",
+                        poppler_path=POPPLER_PATH
+                    )
+                    
+                    if pages:
+                        # 存為 PNG
+                        temp_png = os.path.join(temp_dir, f"page_{page_num}.png")
+                        pages[0].save(temp_png, "PNG")
+                        
+                        if callback:
+                            callback((i + 0.5) / total_pages, f"正在辨識第 {page_num} 頁文字 (OCR)...")
+                        
+                        # 執行 PowerShell OCR
+                        cmd = [
+                            "powershell",
+                            "-ExecutionPolicy", "Bypass",
+                            "-File", ps_script_path,
+                            "-ImagePath", temp_png
+                        ]
+                        
+                        # Windows 底下隱藏視窗
+                        startupinfo = None
+                        if os.name == 'nt':
+                            startupinfo = subprocess.STARTUPINFO()
+                            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                            startupinfo.wShowWindow = subprocess.SW_HIDE
+                        
+                        res = subprocess.run(
+                            cmd, 
+                            capture_output=True, 
+                            text=True, 
+                            encoding='utf-8', 
+                            errors='ignore',
+                            startupinfo=startupinfo
+                        )
+                        
+                        ocr_text = res.stdout.strip()
+                        
+                        # 寫入 Word
+                        if i > 0:
+                            doc.add_page_break()
+                        
+                        doc.add_heading(f"Page {page_num}", level=2)
+                        if ocr_text:
+                            # 依換行分割段落寫入
+                            for line in ocr_text.split('\n'):
+                                if line.strip():
+                                    doc.add_paragraph(line)
+                        else:
+                            doc.add_paragraph("[此頁未偵測到文字]")
+                    
+                    if callback:
+                        callback((i + 1) / total_pages, f"第 {page_num} 頁處理完成")
+                
+            if callback:
+                callback(1.0, "儲存 Word 檔案中...")
+            doc.save(output_path)
+            return True, f"OCR 辨識轉換成功！Word 檔案已儲存至：\n{output_path}"
+
+    except Exception as e:
+        return False, f"轉換失敗: {str(e)}"
+
 # ── 頁面編輯類功能 ─────────────────────────────────────────────
 
 def generate_page_thumbnail(path: str, page_idx: int, rotation: int = 0):

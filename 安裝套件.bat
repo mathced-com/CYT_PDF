@@ -8,7 +8,7 @@ echo.
 
 if exist "..\.venv\Scripts\python.exe" (
     echo [INFO] Environment found. Installing...
-    "..\.venv\Scripts\python.exe" -m pip install customtkinter pypdf pdf2image Pillow pyinstaller
+    "..\.venv\Scripts\python.exe" -m pip install customtkinter pypdf pdf2image Pillow pyinstaller pdf2docx
 ) else (
     echo [ERROR] Virtual environment not found at ..\.venv
 )
