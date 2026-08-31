@@ -3,15 +3,7 @@ import pypdf
 import io
 from PIL import Image
 from typing import Callable, Dict
-from pdf2image import convert_from_path, pdfinfo_from_path
-from pdf2image.exceptions import (
-    PDFInfoNotInstalledError, 
-    PDFPageCountError, 
-    PDFSyntaxError
-)
-# Poppler 執行檔路徑 (用於 PDF 轉圖)
-# 建議放在專案目錄下，方便打包
-POPPLER_PATH = os.path.join(os.path.dirname(__file__), "poppler-26.02.0", "Library", "bin")
+import fitz  # PyMuPDF
 
 class EncryptedPDFError(Exception):
     """自訂例外：當 PDF 受密碼保護且未能解密時拋出"""
@@ -142,17 +134,16 @@ def pdf_to_jpg(
     callback: Callable[[float], None] | None = None
 ) -> tuple[bool, str]:
     """
-    將 PDF 轉換為一系列 JPG 圖片。
+    將 PDF 轉換為一系列 JPG 圖片 (使用 PyMuPDF，無需外部 Poppler 依賴)。
     """
     try:
-        # 1. 取得 PDF 資訊
-        info = pdfinfo_from_path(input_path, poppler_path=POPPLER_PATH)
-        total_pages = info["Pages"]
+        doc = fitz.open(input_path)
+        total_pages = len(doc)
         
         if total_pages == 0:
+            doc.close()
             return False, "該 PDF 檔案沒有任何頁面。"
 
-        # 2. 建立輸出目錄
         if not os.path.exists(output_folder):
             os.makedirs(output_folder, exist_ok=True)
             
@@ -160,48 +151,34 @@ def pdf_to_jpg(
         
         target_indices = parse_range_string(ranges, total_pages)
         if not target_indices:
+            doc.close()
             return False, "未偵測到有效的頁碼範圍。"
 
-        # 3. 逐頁轉換以回傳進度
+        # 計算 DPI 縮放矩陣 (PDF 預設基準為 72 DPI)
+        zoom = dpi / 72.0
+        mat = fitz.Matrix(zoom, zoom)
+
         for i, p_idx in enumerate(target_indices):
             page_num = p_idx + 1
-            # 轉換單一頁面
-            pages = convert_from_path(
-                input_path, 
-                first_page=page_num, 
-                last_page=page_num, 
-                dpi=dpi,
-                fmt="jpeg",
-                poppler_path=POPPLER_PATH
-            )
+            page = doc.load_page(p_idx)
+            # 渲染為 RGB 影像
+            pix = page.get_pixmap(matrix=mat, alpha=False)
             
-            if pages:
-                # 存檔
-                output_filename = f"{base_name}_page_{page_num:03d}.jpg"
-                save_path = os.path.join(output_folder, output_filename)
-                pages[0].save(save_path, "JPEG", quality=quality)
+            output_filename = f"{base_name}_page_{page_num:03d}.jpg"
+            save_path = os.path.join(output_folder, output_filename)
             
-            # 4. 回傳進度 (0.0 ~ 1.0)
+            img_bytes = pix.tobytes("jpeg", jpg_quality=quality)
+            with open(save_path, "wb") as f:
+                f.write(img_bytes)
+            
             if callback:
                 callback((i + 1) / len(target_indices))
                 
+        doc.close()
         return True, f"成功！已將選取的 {len(target_indices)} 頁轉換為圖片並儲存至 {output_folder}"
 
-    except PDFInfoNotInstalledError:
-        return False, (
-            "【錯誤】找不到 Poppler 執行檔。\n\n"
-            "原因：pdf2image 依賴於 Poppler 軟體進行轉換。\n"
-            "解決方案：\n"
-            "1. 下載 Poppler for Windows (例如從 Release 網站)。\n"
-            "2. 解壓縮後將 bin 資料夾的路徑加入系統的 PATH 環境變數中。\n"
-            "3. 重新啟動 IDE 或終端機。"
-        )
-    except PDFPageCountError:
-        return False, "無法讀取 PDF 頁數，檔案可能毀損或受密碼保護。"
-    except PDFSyntaxError:
-        return False, "PDF 語法錯誤，無法處理該檔案。"
     except Exception as e:
-        return False, f"轉換過程中發生非預期錯誤：\n{str(e)}"
+        return False, f"轉換過程中發生錯誤：\n{str(e)}"
 
 def compress_pdf(
     input_path: str,
@@ -359,7 +336,6 @@ def convert_pdf_to_word(
 
         elif mode == "ocr":
             import docx
-            from pdf2image import convert_from_path, pdfinfo_from_path
             import subprocess
             import tempfile
             import time
@@ -373,12 +349,15 @@ def convert_pdf_to_word(
                 time.sleep(2.5)
 
             # 1. 取得 PDF 資訊
-            info = pdfinfo_from_path(input_path, poppler_path=POPPLER_PATH)
-            total_pages = info["Pages"]
+            fitz_doc = fitz.open(input_path)
+            total_pages = len(fitz_doc)
             if total_pages == 0:
+                fitz_doc.close()
                 return False, "該 PDF 檔案沒有任何頁面。"
 
             doc = docx.Document()
+            zoom = 150 / 72.0
+            mat = fitz.Matrix(zoom, zoom)
             
             # 在臨時目錄中建立 OCR 腳本與影像
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -454,66 +433,57 @@ catch {
                     if callback:
                         callback(i / total_pages, f"正在將第 {page_num} 頁轉換為圖片...")
                     
-                    # 轉單頁為圖片
-                    pages = convert_from_path(
-                        input_path, 
-                        first_page=page_num, 
-                        last_page=page_num, 
-                        dpi=150, 
-                        fmt="png",
-                        poppler_path=POPPLER_PATH
+                    page = fitz_doc.load_page(i)
+                    pix = page.get_pixmap(matrix=mat, alpha=False)
+                    temp_png = os.path.join(temp_dir, f"page_{page_num}.png")
+                    pix.save(temp_png)
+                    
+                    if callback:
+                        callback((i + 0.5) / total_pages, f"正在辨識第 {page_num} 頁文字 (OCR)...")
+                    
+                    # 執行 PowerShell OCR
+                    cmd = [
+                        "powershell",
+                        "-ExecutionPolicy", "Bypass",
+                        "-File", ps_script_path,
+                        "-ImagePath", temp_png
+                    ]
+                    
+                    # Windows 底下隱藏視窗
+                    startupinfo = None
+                    if os.name == 'nt':
+                        startupinfo = subprocess.STARTUPINFO()
+                        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                        startupinfo.wShowWindow = subprocess.SW_HIDE
+                    
+                    res = subprocess.run(
+                        cmd, 
+                        capture_output=True, 
+                        text=True, 
+                        encoding='utf-8', 
+                        errors='ignore',
+                        startupinfo=startupinfo
                     )
                     
-                    if pages:
-                        # 存為 PNG
-                        temp_png = os.path.join(temp_dir, f"page_{page_num}.png")
-                        pages[0].save(temp_png, "PNG")
-                        
-                        if callback:
-                            callback((i + 0.5) / total_pages, f"正在辨識第 {page_num} 頁文字 (OCR)...")
-                        
-                        # 執行 PowerShell OCR
-                        cmd = [
-                            "powershell",
-                            "-ExecutionPolicy", "Bypass",
-                            "-File", ps_script_path,
-                            "-ImagePath", temp_png
-                        ]
-                        
-                        # Windows 底下隱藏視窗
-                        startupinfo = None
-                        if os.name == 'nt':
-                            startupinfo = subprocess.STARTUPINFO()
-                            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                            startupinfo.wShowWindow = subprocess.SW_HIDE
-                        
-                        res = subprocess.run(
-                            cmd, 
-                            capture_output=True, 
-                            text=True, 
-                            encoding='utf-8', 
-                            errors='ignore',
-                            startupinfo=startupinfo
-                        )
-                        
-                        ocr_text = res.stdout.strip()
-                        
-                        # 寫入 Word
-                        if i > 0:
-                            doc.add_page_break()
-                        
-                        doc.add_heading(f"Page {page_num}", level=2)
-                        if ocr_text:
-                            # 依換行分割段落寫入
-                            for line in ocr_text.split('\n'):
-                                if line.strip():
-                                    doc.add_paragraph(line)
-                        else:
-                            doc.add_paragraph("[此頁未偵測到文字]")
+                    ocr_text = res.stdout.strip()
+                    
+                    # 寫入 Word
+                    if i > 0:
+                        doc.add_page_break()
+                    
+                    doc.add_heading(f"Page {page_num}", level=2)
+                    if ocr_text:
+                        # 依換行分割段落寫入
+                        for line in ocr_text.split('\n'):
+                            if line.strip():
+                                doc.add_paragraph(line)
+                    else:
+                        doc.add_paragraph("[此頁未偵測到文字]")
                     
                     if callback:
                         callback((i + 1) / total_pages, f"第 {page_num} 頁處理完成")
                 
+            fitz_doc.close()
             if callback:
                 callback(1.0, "儲存 Word 檔案中...")
             doc.save(output_path)
@@ -530,25 +500,17 @@ def generate_page_thumbnail(path: str, page_idx: int, rotation: int = 0):
     如果是 PDF 且 idx >= 0，則提取頁面；如果是圖片，則直接讀取。
     """
     from PIL import Image
-    import os
+    import io
     
     try:
         if path.lower().endswith((".jpg", ".png", ".jpeg")):
             img = Image.open(path)
         else:
-            from pdf2image import convert_from_path
-            # Windows 下需指定 poppler 路徑
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            poppler_path = os.path.join(base_dir, "poppler-26.02.0", "Library", "bin")
-            if not os.path.exists(poppler_path):
-                # 嘗試開發環境下的路徑 (如果 pdf_utils 在子目錄)
-                poppler_path = os.path.join(os.path.dirname(base_dir), "poppler-26.02.0", "Library", "bin")
-            
-            if not os.path.exists(poppler_path): poppler_path = None
-            
-            images = convert_from_path(path, first_page=page_idx+1, last_page=page_idx+1, poppler_path=poppler_path)
-            if not images: return None
-            img = images[0]
+            doc = fitz.open(path)
+            page = doc.load_page(page_idx)
+            pix = page.get_pixmap(alpha=False)
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            doc.close()
         
         # 套用旋轉
         if rotation != 0:

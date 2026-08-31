@@ -20,7 +20,7 @@ import customtkinter as ctk
 # ─────────────────────────────────────────────
 # 專案資訊 (由 release_helper.py 讀取)
 # ─────────────────────────────────────────────
-APP_VERSION = "1.2.5"
+APP_VERSION = "1.2.6"
 GITHUB_REPO = "mathced-com/CYT_PDF" # 請根據實際 GitHub 帳號修改
 
 
@@ -498,11 +498,19 @@ class ConvertPage(BasePage):
             self.run_in_thread(self._get_preview_image, path, on_success=self._show_preview)
 
     def _get_preview_image(self, path):
-        from pdf2image import convert_from_path
-        from pdf_utils import POPPLER_PATH
+        import fitz
+        import io
+        from PIL import Image
         try:
-            pages = convert_from_path(path, first_page=1, last_page=1, dpi=72, poppler_path=POPPLER_PATH)
-            if pages: return pages[0]
+            doc = fitz.open(path)
+            if len(doc) > 0:
+                page = doc.load_page(0)
+                pix = page.get_pixmap(dpi=72, alpha=False)
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                doc.close()
+                return img
+            doc.close()
+            return None
         except: return None
 
     def _show_preview(self, pil_img):
@@ -663,17 +671,19 @@ class VisualPageSelector(ctk.CTkToplevel):
         
         end_idx = min(start_idx + 4, self.total_pages) # 一次轉 4 頁
         
-        from pdf2image import convert_from_path
-        from pdf_utils import POPPLER_PATH
+        import fitz
+        import io
         from PIL import Image
         
         try:
             # 批量轉換
-            pages = convert_from_path(self.pdf_path, first_page=start_idx+1, last_page=end_idx, 
-                                    dpi=50, poppler_path=POPPLER_PATH)
-            
-            for i, pil_img in enumerate(pages):
-                page_idx = start_idx + i
+            doc = fitz.open(self.pdf_path)
+            for page_idx in range(start_idx, end_idx):
+                page = doc.load_page(page_idx)
+                zoom = 50 / 72.0
+                mat = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                pil_img = Image.open(io.BytesIO(pix.tobytes("png")))
                 
                 # 建立容器
                 item_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
@@ -694,10 +704,11 @@ class VisualPageSelector(ctk.CTkToplevel):
                 cb = ctk.CTkCheckBox(item_frame, text=f"第 {page_idx+1} 頁", variable=self.selected_vars[page_idx])
                 cb.pack(pady=5)
 
+            doc.close()
             # 繼續下一批
             self.after(10, lambda: self._render_batch(end_idx))
         except:
-            self.info_label.configure(text="部分縮圖載入失敗 (Poppler 問題)", text_color="orange")
+            self.info_label.configure(text="部分縮圖載入失敗", text_color="orange")
 
     def _select_all(self):
         for v in self.selected_vars.values(): v.set(True)
@@ -880,11 +891,19 @@ class SplitPage(BasePage):
             self.run_in_thread(self._get_preview_image, path, on_success=self._show_preview)
 
     def _get_preview_image(self, path):
-        from pdf2image import convert_from_path
-        from pdf_utils import POPPLER_PATH
+        import fitz
+        import io
+        from PIL import Image
         try:
-            pages = convert_from_path(path, first_page=1, last_page=1, dpi=72, poppler_path=POPPLER_PATH)
-            if pages: return pages[0]
+            doc = fitz.open(path)
+            if len(doc) > 0:
+                page = doc.load_page(0)
+                pix = page.get_pixmap(dpi=72, alpha=False)
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                doc.close()
+                return img
+            doc.close()
+            return None
         except: return None
 
     def _show_preview(self, pil_img):
@@ -1113,11 +1132,19 @@ class CompressPage(BasePage):
             self.run_in_thread(self._get_preview_image, path, on_success=self._show_preview)
 
     def _get_preview_image(self, path):
-        from pdf2image import convert_from_path
-        from pdf_utils import POPPLER_PATH
+        import fitz
+        import io
+        from PIL import Image
         try:
-            pages = convert_from_path(path, first_page=1, last_page=1, dpi=72, poppler_path=POPPLER_PATH)
-            if pages: return pages[0]
+            doc = fitz.open(path)
+            if len(doc) > 0:
+                page = doc.load_page(0)
+                pix = page.get_pixmap(dpi=72, alpha=False)
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                doc.close()
+                return img
+            doc.close()
+            return None
         except: return None
 
     def _show_preview(self, pil_img):
@@ -1341,11 +1368,19 @@ class DocxPage(BasePage):
             self.run_in_thread(self._get_preview_image, path, on_success=self._show_preview)
 
     def _get_preview_image(self, path):
-        from pdf2image import convert_from_path
-        from pdf_utils import POPPLER_PATH
+        import fitz
+        import io
+        from PIL import Image
         try:
-            pages = convert_from_path(path, first_page=1, last_page=1, dpi=72, poppler_path=POPPLER_PATH)
-            if pages: return pages[0]
+            doc = fitz.open(path)
+            if len(doc) > 0:
+                page = doc.load_page(0)
+                pix = page.get_pixmap(dpi=72, alpha=False)
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                doc.close()
+                return img
+            doc.close()
+            return None
         except: return None
 
     def _show_preview(self, pil_img):
